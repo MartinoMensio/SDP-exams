@@ -48,3 +48,25 @@ at page 28.
 Page fault rate = 12/29 = 41%
 
 Mean Resident Set = 39/29 = 1.34
+
+
+#WINDOWS
+
+##Questions
+1. (2.0 marks) Briefly describe similarities and differences between WIN32 critical sections and mutexes.
+Can critical sections be used to provide mutual exclusion between two threads? And two processes? *(motivate the answer)*
+
+2. (3.0 marks) Explain the role of filter expressions in `try...except` blocks. Why/when do the following block call the Filter functions?
+```c
+__try {
+  __try {
+    // statements
+    ...
+  } __except(Filter1(GetExceptionCode()));
+} __except(Filter2(GetExceptionCode()));
+```
+Are `Filter1` and `Filter2` system routines or user-generated functions?  
+What is the role of `GetExceptionCode()` ? Under which conditions is `Filter2` called?  
+Is `Filter2` called when `Filter1` return `EXCEPTION_CONTINUE_EXECUTION` ? *(motivate all yes/no answers)*
+
+3. (4.0 marks)
