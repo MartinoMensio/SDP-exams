@@ -5,7 +5,8 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <time.h>
-#include <pthred.h>
+#include <pthread.h>
+#include <time.h>
 
 #define MSG_STOP 0
 #define MSG_START 1
@@ -37,6 +38,9 @@ void machine_work(int id, int read_fd, int write_fd);
 void controller_work(int k);
 void monitor_work(int k, int read_fd);
 void signal_hndlr(int sig_no);
+
+ssize_t write_interrupted(int fd, const void *buf, size_t count);
+ssize_t read_interrupted(int fd, void *buf, size_t count);
 
 int main(int argc, char **argv) {
     int i;
@@ -135,19 +139,19 @@ int main(int argc, char **argv) {
 void machine_work(int id, int read_fd, int write_fd) {
     message_t m_in, m_out;
     int sleep_time;
-    int stop = 0;
     srand(time(NULL));
-    while(!stop) {
+    //signal(SIGPIPE, SIG_IGN); // ignore SIGPIPE that can be caused by controller dead because already sent stop
+    while(1) {
         read(read_fd, &m_in, sizeof(message_t));
         switch(m_in.msg_type) {
             case MSG_STOP:
                 m_out.msg_type = MSG_DONE;
                 m_out.id = id;
                 m_out.time = 0;
-                stop = 1;
+                return;
                 break;
             case MSG_START:
-                sleep_time = rand() % 4 + 1
+                sleep_time = rand() % 4 + 1;
                 sleep(sleep_time);
                 m_out.msg_type = MSG_DONE;
                 m_out.id = id;
@@ -213,10 +217,6 @@ void signal_hndlr(int sig_no) {
             for(i = 0; i < k; i++) {
                 write(machine_fds_write[i], &m_out, sizeof(message_t));
             }
-            // need to wait the end of the machine writes, or they will get SIGPIPE while they write
-            for(i = 0; i < k; i++) {
-                read(controller_fd_read, &m_out, sizeof(message_t));
-            }
             kill(monitor_pid, SIGKILL);
             exit(0);
             break;
@@ -238,4 +238,28 @@ void signal_hndlr(int sig_no) {
     return;
 }
 
-void monitor_work(int k, int read_fd);
+void monitor_work(int k, int read_fd) {
+    char line[255];
+    double avg_duration;
+    time_t t;
+    struct tm tm;
+    while(1) {
+        fgets(line, 255, stdin);
+        kill(getppid(), SIGUSR1);
+        read(read_fd, &avg_duration, sizeof(double));
+        t = time(NULL);
+        tm = *localtime(&t);
+        printf("%d/%d/%d average duration: %f", tm.tm_mday, tm.tm_mon, tm.tm_year, avg_duration);
+    }
+}
+
+ssize_t write_interrupted(int fd, const void *buf, size_t count) {
+    ssize_t retval;
+    while((retval = write(fd, buf, count)) == -1 && errno == EINTR);
+    return retval;
+}
+ssize_t read_interrupted(int fd, void *buf, size_t count) {
+    ssize_t retval;
+    while((retval = read(fd, buf, count)) == -1 && errno == EINTR);
+    return retval;
+}
