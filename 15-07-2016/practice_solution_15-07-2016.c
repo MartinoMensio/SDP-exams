@@ -20,20 +20,21 @@ typedef struct _message {
 } message_t; // this struct is little therefore writes are atomic
 
 typedef struct _statistics {
-    pthread_mutex_t me; // protect the structure
     int tot_duration;
     int tot_works;
 } statistics_t;
 
-// global variable for the controller signal_hndlr
+// global variable (needed for the controller signal_hndlr)
 statistics_t statistics;
 int monitor_fd_write;
-int machine_fds_write;
+int *machine_fds_write;
+int controller_fd_read;
 int k;
+int monitor_pid;
 
 
 void machine_work(int id, int read_fd, int write_fd);
-void controller_work(int k, int read_fd, int monitor_pid);
+void controller_work(int k);
 void monitor_work(int k, int read_fd);
 void signal_hndlr(int sig_no);
 
@@ -116,7 +117,9 @@ int main(int argc, char **argv) {
     if(cpid) {
         // father (controller)
         close(monitor_pipe[0]); // close read end of monitor pipe
-        controller_work(k, controller_pipe[0], cpid);
+        controller_fd_read = controller_pipe[0];
+        monitor_pid = cpid;
+        controller_work(k);
     } else {
         // child (monitor)
         close(controller_pipe[0]);
@@ -158,11 +161,14 @@ void machine_work(int id, int read_fd, int write_fd) {
     }
 }
 
-void controller_work(int k, int read_fd, int monitor_pid) {
+void controller_work(int k) {
     int i;
     message_t m_in, m_out;
+    sigset_t saved_sigset, x;
 
-    pthread_mutex_init(&statistics.me, NULL);
+    sigemptyset(&x);
+    sigaddset(&x, SIGUSR1);
+
     statistics.tot_duration = 0;
     statistics.tot_works = 0;
 
@@ -177,12 +183,12 @@ void controller_work(int k, int read_fd, int monitor_pid) {
             write_interrupted(machine_fds_write[i], &m_out, sizeof(message_t));
         }
         for(i = 0; i < k; i++) {
-            read_interrupted(read_fd, &m_in, sizeof(message_t));
+            read_interrupted(controller_fd_read, &m_in, sizeof(message_t));
 
-            pthread_mutex_lock(&statistics.me); // signal_hndlr could read dirty values there
+            sigprocmask(SIG_BLOCK, &x, &saved_sigset); // protect this region by blocking SIGUSR1
             statistics.tot_duration += m_in.time;
             statistics.tot_works++;
-            pthread_mutex_unlock(&statistics.me);
+            sigprocmask(SIG_SETMASK, &saved_sigset, NULL); // now SIGUSR1 can be delivered safely
         }
     }
 }
@@ -193,34 +199,43 @@ void signal_hndlr(int sig_no) {
     double avg_duration;
     message_t m_out;
 
-    switch(sig_no) {
-        case SIGALARM:
-        // TIMEOUT expired
-        m_out.msg_type = MSG_STOP;
-        for(i = 0; i < k; i++) {
-            write(machine_fds_write[i], &m_out, sizeof(message_t));
-        }
-        break;
-        case SIGUSR1:
-        // request from monitor
-        if(pthread_mutex_trylock(&statistics.me) == EBUSY) {
-            // inside
-            printf("controller is inside the critical region. Let's try to wait a bit\n");
-            kill(getpid(), sig_no);
-            return;
-        }
-        // read and update statistics
-        tot_duration = statistics.tot_duration;
-        tot_works = statistics.tot_works;
-        statistics.tot_duration = 0;
-        statistics.tot_works = 0;
-        pthread_mutex_unlock(&statistics.me);
+    sigset_t saved_sigset, x;
 
-        avg_duration = tot_duration / tot_works;
-        // send statistics to monitor
-        write(monitor_fd_write, &avg_duration, sizeof(double));
-        break;
+    sigemptyset(&x);
+    sigaddset(&x, SIGUSR1);
+    sigprocmask(SIG_BLOCK, &x, &saved_sigset);
+
+    switch(sig_no) {
+        case SIGALRM:
+            // TIMEOUT expired
+            m_out.msg_type = MSG_STOP;
+            
+            for(i = 0; i < k; i++) {
+                write(machine_fds_write[i], &m_out, sizeof(message_t));
+            }
+            // need to wait the end of the machine writes, or they will get SIGPIPE while they write
+            for(i = 0; i < k; i++) {
+                read(controller_fd_read, &m_out, sizeof(message_t));
+            }
+            kill(monitor_pid, SIGKILL);
+            exit(0);
+            break;
+        case SIGUSR1:
+            // request from monitor
+
+            // read and update statistics
+            tot_duration = statistics.tot_duration;
+            tot_works = statistics.tot_works;
+            statistics.tot_duration = 0;
+            statistics.tot_works = 0;
+            
+            avg_duration = tot_duration / tot_works;
+            // send statistics to monitor
+            write(monitor_fd_write, &avg_duration, sizeof(double));
+            break;
     }
+    sigprocmask(SIG_SETMASK, &saved_sigset, NULL); // now SIGUSR1 can be delivered again
+    return;
 }
 
 void monitor_work(int k, int read_fd);
