@@ -12,7 +12,8 @@
 #define MSG_START 1
 #define MSG_DONE 2
 
-#define TIMEOUT 60
+#define TIMEOUT 20
+//#define DEBUG
 
 typedef struct _message {
     int msg_type;
@@ -123,6 +124,7 @@ int main(int argc, char **argv) {
         close(monitor_pipe[0]); // close read end of monitor pipe
         controller_fd_read = controller_pipe[0];
         monitor_pid = cpid;
+        monitor_fd_write = monitor_pipe[1];
         controller_work(k);
     } else {
         // child (monitor)
@@ -142,12 +144,21 @@ void machine_work(int id, int read_fd, int write_fd) {
     srand(time(NULL));
     //signal(SIGPIPE, SIG_IGN); // ignore SIGPIPE that can be caused by controller dead because already sent stop
     while(1) {
+#ifdef DEBUG
+        printf("machine_work %d going to read a message\n", id);
+#endif
         read(read_fd, &m_in, sizeof(message_t));
+#ifdef DEBUG
+        printf("machine_work %d has read a message: %d\n", id, m_in.msg_type);
+#endif
         switch(m_in.msg_type) {
             case MSG_STOP:
                 m_out.msg_type = MSG_DONE;
                 m_out.id = id;
                 m_out.time = 0;
+#ifdef DEBUG
+                printf("machine_work %d going to terminate\n", id);
+#endif
                 return;
                 break;
             case MSG_START:
@@ -162,6 +173,9 @@ void machine_work(int id, int read_fd, int write_fd) {
                 return;
         }
         write(write_fd, &m_out, sizeof(message_t));
+#ifdef DEBUG
+        printf("machine_work %d has wrote a DONE message\n", id);
+#endif
     }
 }
 
@@ -185,10 +199,15 @@ void controller_work(int k) {
         m_out.msg_type = MSG_START;
         for(i = 0; i < k; i++) {
             write_interrupted(machine_fds_write[i], &m_out, sizeof(message_t));
+#ifdef DEBUG
+            printf("controller has wrote a START message\n");
+#endif
         }
         for(i = 0; i < k; i++) {
             read_interrupted(controller_fd_read, &m_in, sizeof(message_t));
-
+#ifdef DEBUG
+            printf("controller has read a DONE message\n");
+#endif
             sigprocmask(SIG_BLOCK, &x, &saved_sigset); // protect this region by blocking SIGUSR1
             statistics.tot_duration += m_in.time;
             statistics.tot_works++;
@@ -211,27 +230,42 @@ void signal_hndlr(int sig_no) {
 
     switch(sig_no) {
         case SIGALRM:
+#ifdef DEBUG
+            printf("controller TIMEOUT\n");
+#endif
             // TIMEOUT expired
             m_out.msg_type = MSG_STOP;
             
             for(i = 0; i < k; i++) {
                 write(machine_fds_write[i], &m_out, sizeof(message_t));
+#ifdef DEBUG
+                printf("controller has wrote a STOP message\n");
+#endif
             }
             kill(monitor_pid, SIGKILL);
+#ifdef DEBUG
+            printf("controller has sent a SIGKILL to monitor\n");
+#endif
+            printf("terminating because of timeout\n");
             exit(0);
             break;
         case SIGUSR1:
             // request from monitor
-
+#ifdef DEBUG
+            printf("controller has received a SIGUSR1\n");
+#endif
             // read and update statistics
             tot_duration = statistics.tot_duration;
             tot_works = statistics.tot_works;
             statistics.tot_duration = 0;
             statistics.tot_works = 0;
             
-            avg_duration = tot_duration / tot_works;
+            avg_duration = ((double)tot_duration) / tot_works;
             // send statistics to monitor
             write(monitor_fd_write, &avg_duration, sizeof(double));
+#ifdef DEBUG
+            printf("controller has sent a double to monitor: %f\n", avg_duration);
+#endif
             break;
     }
     sigprocmask(SIG_SETMASK, &saved_sigset, NULL); // now SIGUSR1 can be delivered again
@@ -245,21 +279,35 @@ void monitor_work(int k, int read_fd) {
     struct tm tm;
     while(1) {
         fgets(line, 255, stdin);
+#ifdef DEBUG
+        printf("monitor has read an input line\n");
+#endif
         kill(getppid(), SIGUSR1);
         read(read_fd, &avg_duration, sizeof(double));
+#ifdef DEBUG
+        printf("monitor has received a double: %f\n", avg_duration);
+#endif
         t = time(NULL);
         tm = *localtime(&t);
-        printf("%d/%d/%d average duration: %f", tm.tm_mday, tm.tm_mon, tm.tm_year, avg_duration);
+        printf("%02d/%02d/%d average duration: %f\n", tm.tm_mday, tm.tm_mon + 1, tm.tm_year + 1900, avg_duration);
     }
 }
 
 ssize_t write_interrupted(int fd, const void *buf, size_t count) {
     ssize_t retval;
-    while((retval = write(fd, buf, count)) == -1 && errno == EINTR);
+    while((retval = write(fd, buf, count)) == -1 && errno == EINTR) {
+#ifdef DEBUG
+        printf("write interrupted\n");
+#endif
+    }
     return retval;
 }
 ssize_t read_interrupted(int fd, void *buf, size_t count) {
     ssize_t retval;
-    while((retval = read(fd, buf, count)) == -1 && errno == EINTR);
+    while((retval = read(fd, buf, count)) == -1 && errno == EINTR) {
+#ifdef DEBUG
+        printf("read interrupted\n");
+#endif
+    }
     return retval;
 }
