@@ -178,11 +178,11 @@ DWORD WINAPI threadWork(LPVOID param) {
 #endif // DEBUG
 			r = randomFileRead();
 			if (r == NULL) {
-#if DEBUG
-				_tprintf(_T("last thread type a\n"));
-#endif // DEBUG
 				// end of all files, this thread is going to terminate and decreases count of threadsA
 				if (protectedIntDecrease(&threadsA_count) == 0) {
+#if DEBUG
+					_tprintf(_T("last thread type a\n"));
+#endif // DEBUG
 					// last threadA closes all the queuesA
 					for (i = 0; i < N; i++) {
 						queueClose(&QueuesA[i]);
@@ -209,12 +209,12 @@ DWORD WINAPI threadWork(LPVOID param) {
 #endif // DEBUG
 			r = randomQueueRead(QueuesA, &queuesA_active);
 			if (r == NULL) {
-#if DEBUG
-				_tprintf(_T("last thread type b\n"));
-#endif // DEBUG
 				// end of all queuesA, this thread is going to terminate and decreases count of threadsB
 				if (protectedIntDecrease(&threadsB_count) == 0) {
-					// last threadA closes all the queuesB
+#if DEBUG
+					_tprintf(_T("last thread type b\n"));
+#endif // DEBUG
+					// last threadB closes all the queuesB
 					for (i = 0; i < N; i++) {
 						queueClose(&QueuesB[i]);
 					}
@@ -237,13 +237,16 @@ DWORD WINAPI threadWork(LPVOID param) {
 		case 'c':
 			r = randomQueueRead(QueuesB, &queuesA_active);
 			if (r == NULL) {
+#if DEBUG
+				_tprintf(_T("thread c terminating\n"));
+#endif // DEBUG
 				// end of all queuesB, this thread is going to terminate
 				return 0;
 			}
 #if DEBUG
 			_tprintf(_T("thread type c read: %d %s\n"), r->n, r->content);
 #endif // DEBUG
-			manipulateRecord(r, 'b');
+			manipulateRecord(r, 'c');
 #if DEBUG
 			_tprintf(_T("thread type c manipulated: %d %s\n"), r->n, r->content);
 #endif // DEBUG
@@ -603,7 +606,7 @@ BOOL fileManagerWrite(LPFILEMANAGER fm, LPRECORD r) {
 
 BOOL protectedRandInit() {
 	InitializeCriticalSection(&rand_gen.me);
-	srand((unsigned)time(NULL));
+	rand_gen.seed = time(NULL);
 	return TRUE;
 }
 INT protectedRand() {
