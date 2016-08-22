@@ -445,7 +445,6 @@ BOOL randomQueueWrite(LPQUEUE queue_set, LPRECORD r) {
 }
 
 LPRECORD randomQueueRead(LPQUEUE queue_set, LPPROTECTED_INDEXES pi) {
-	// TODO
 	LPRECORD r;
 	INT chosenReal, chosenIndex;
 	while (TRUE) {
