@@ -2,7 +2,7 @@
 
 An office automation system is organized as represented by the following picture.
 
-![Alt text](https://cdn.rawgit.com/MartinoMensio/SDP-exams/master/2016-07-01/2016-07-01_practice_drawing.svg "System representation")
+![2016-07-01_practice_drawing.svg](https://cdn.rawgit.com/MartinoMensio/SDP-exams/master/2016-07-01/2016-07-01_practice_drawing.svg "System representation")
 
 The Windows 32 system simulating the system is composed by:
 
