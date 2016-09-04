@@ -154,10 +154,18 @@ INT _tmain(INT argc, LPCTSTR argv[]) {
 		threadsC[i] = CreateThread(NULL, 0, threadWork, (LPVOID)'c', 0, NULL);
 		assert(threadsC[i]);
 	}
-
-	assert(WaitForMultipleObjects(N, threadsA, TRUE, INFINITE) == WAIT_OBJECT_0);
-	assert(WaitForMultipleObjects(N, threadsB, TRUE, INFINITE) == WAIT_OBJECT_0);
-	assert(WaitForMultipleObjects(N, threadsC, TRUE, INFINITE) == WAIT_OBJECT_0);
+	if (N > MAXIMUM_WAIT_OBJECTS) {
+		// wait the threads termination in order
+		for (i = 0; i < N; i++) {
+			assert(WaitForSingleObject(threadsA[i], INFINITE) == WAIT_OBJECT_0);
+			assert(WaitForSingleObject(threadsB[i], INFINITE) == WAIT_OBJECT_0);
+			assert(WaitForSingleObject(threadsC[i], INFINITE) == WAIT_OBJECT_0);
+		}
+	} else {
+		assert(WaitForMultipleObjects(N, threadsA, TRUE, INFINITE) == WAIT_OBJECT_0);
+		assert(WaitForMultipleObjects(N, threadsB, TRUE, INFINITE) == WAIT_OBJECT_0);
+		assert(WaitForMultipleObjects(N, threadsC, TRUE, INFINITE) == WAIT_OBJECT_0);
+	}
 
 	return 0;
 }
