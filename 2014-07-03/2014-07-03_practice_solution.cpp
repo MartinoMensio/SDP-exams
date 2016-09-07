@@ -363,20 +363,49 @@ BOOL QueueDequeue(LPQUEUE q, LPVOTER v) {
 		if (q->closed) {
 			return FALSE;
 		}
-		// TODO
+		q->count--;
+		*v = q->voters[q->deq_index];
+		q->deq_index = q->deq_index + 1 % q->size;
 	}
 	__finally {
+		WakeConditionVariable(&q->can_enqueue);
 		LeaveCriticalSection(&q->me);
 	}
+	return TRUE;
 }
-BOOL QueueEnqueue(LPQUEUE q, VOTER v);
+BOOL QueueEnqueue(LPQUEUE q, VOTER v) {
+	EnterCriticalSection(&q->me);
+	__try {
+		while (q->count == q->size && !q->closed) {
+			SleepConditionVariableCS(&q->can_enqueue, &q->me, INFINITE);
+		}
+		if (q->closed) {
+			return FALSE;
+		}
+		q->count++;
+		q->voters[q->enq_index] = v;
+		q->enq_index = q->enq_index + 1 % q->size;
+	}
+	__finally {
+		WakeConditionVariable(&q->can_dequeue);
+		LeaveCriticalSection(&q->me);
+	}
+	return TRUE;
+}
 BOOL QueueClose(LPQUEUE q) {
 	EnterCriticalSection(&q->me);
 	__try {
-
+		q->closed == TRUE;
 	}
 	__finally {
+		WakeConditionVariable(&q->can_dequeue);
+		WakeConditionVariable(&q->can_enqueue);
 		LeaveCriticalSection(&q->me);
 	}
+	return TRUE;
 }
-BOOL QueueDelete(LPQUEUE q);
+BOOL QueueDelete(LPQUEUE q) {
+	DeleteCriticalSection(&q->me);
+	free(q->voters);
+	return TRUE;
+}
