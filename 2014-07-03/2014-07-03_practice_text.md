@@ -2,7 +2,7 @@
 
 The candidate is requested to write a concurrent programm in the Visual Studio environment, to simulate a polling station during a vote section. The polling station is organized as represented in the following picture.
 
-TODO image ![alt](http://link)
+![2014-07-03_practice_drawing.svg](https://cdn.rawgit.com/MartinoMensio/SDP-exams/master/2014-07-03/2014-07-03_practice_drawing.svg "Polling station scheme")
 
 Incoming people (both males and females) wait for their turn to have access to the register station in a unique queue. Males and females have separate register stations. After registering, each person enter a new queue (of size **m**), before proceeding to one of the **n** voting stations for the final vote. The value of **m** and **n** depend on the room size where the polling station is located.
 
