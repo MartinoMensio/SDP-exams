@@ -58,11 +58,13 @@ typedef struct _HANDTOHAND {
 	HANDLE hVoterRequest; // the handshake request (manual reset event)
 	HANDLE hVoterDelivered; // the handshake has been performed (manual reset event)
 	VOTER voter; // data passed hand to hand
+	BOOL closed; // no more input
 } HANDTOHAND, *LPHANDTOHAND;
 
 BOOL HandToHandInit(LPHANDTOHAND);
 BOOL HandToHandRequest(LPHANDTOHAND, LPVOTER);
 BOOL HandToHandDeliver(LPHANDTOHAND, VOTER);
+BOOL HandToHandClose(LPHANDTOHAND);
 BOOL HandToHandDelete(LPHANDTOHAND);
 
 
@@ -126,7 +128,7 @@ INT _tmain(INT argc, LPTSTR argv[]) {
 		_ftprintf(stderr, _T("Impossible to open input file.\n"));
 		return 1;
 	}
-	outputFile = _tfopen(inputFileName, _T("w"));
+	outputFile = _tfopen(outputFileName, _T("w"));
 	if (outputFile == NULL) {
 		_ftprintf(stderr, _T("Impossible to open output file.\n"));
 		return 1;
@@ -168,11 +170,18 @@ INT _tmain(INT argc, LPTSTR argv[]) {
 DWORD WINAPI Welcoming(LPVOID p) {
 	FILE *file;
 	VOTER v;
+	int nRead;
 
 	file = (FILE *)p;
+	nRead = 0;
 	while (VoterRead(file, &v)) {
+		if (nRead++ == 0) {
+			TimeInit(&timer, v.arrival_time_minutes); // set time reference on first record
+		}
 		HandToHandDeliver(&incomingVoters[v.sex], v);
 	}
+	HandToHandClose(&incomingVoters[MALE]);
+	HandToHandClose(&incomingVoters[FEMALE]);
 	return NULL;
 }
 DWORD WINAPI RegisteringStation(LPVOID p) {
@@ -305,6 +314,7 @@ BOOL VoterWrite(FILE *file, VOTER v) {
 }
 
 BOOL HandToHandInit(LPHANDTOHAND hth) {
+	hth->closed = FALSE;
 	hth->hVoterDelivered = CreateEvent(NULL, FALSE, FALSE, NULL); // auto reset
 	hth->hVoterRequest = CreateEvent(NULL, FALSE, FALSE, NULL); // auto reset
 	if (hth->hVoterDelivered == NULL || hth->hVoterRequest == NULL) {
@@ -320,6 +330,9 @@ BOOL HandToHandRequest(LPHANDTOHAND hth, LPVOTER v) {
 		_ftprintf(stderr, _T("Error waiting response\n"));
 		return FALSE;
 	}
+	if (hth->closed) {
+		return FALSE;
+	}
 	*v = hth->voter;
 	return TRUE;
 }
@@ -332,6 +345,16 @@ BOOL HandToHandDeliver(LPHANDTOHAND hth, VOTER v) {
 	}
 	hth->voter = v;
 	SetEvent(hth->hVoterDelivered); // send response
+	return TRUE;
+}
+BOOL HandToHandClose(LPHANDTOHAND hth) {
+	// wait for request
+	if (WaitForSingleObject(hth->hVoterRequest, INFINITE) != WAIT_OBJECT_0) {
+		_ftprintf(stderr, _T("Error waiting request\n"));
+		return FALSE;
+	}
+	hth->closed = TRUE;
+	SetEvent(hth->hVoterDelivered); // send response (empty)
 	return TRUE;
 }
 BOOL HandToHandDelete(LPHANDTOHAND hth) {
@@ -369,7 +392,7 @@ BOOL QueueDequeue(LPQUEUE q, LPVOTER v) {
 		q->deq_index = q->deq_index + 1 % q->size;
 	}
 	__finally {
-		WakeConditionVariable(&q->can_enqueue);
+		WakeAllConditionVariable(&q->can_enqueue);
 		LeaveCriticalSection(&q->me);
 	}
 	return TRUE;
@@ -388,7 +411,7 @@ BOOL QueueEnqueue(LPQUEUE q, VOTER v) {
 		q->enq_index = q->enq_index + 1 % q->size;
 	}
 	__finally {
-		WakeConditionVariable(&q->can_dequeue);
+		WakeAllConditionVariable(&q->can_dequeue);
 		LeaveCriticalSection(&q->me);
 	}
 	return TRUE;
@@ -399,8 +422,8 @@ BOOL QueueClose(LPQUEUE q) {
 		q->closed = TRUE;
 	}
 	__finally {
-		WakeConditionVariable(&q->can_dequeue);
-		WakeConditionVariable(&q->can_enqueue);
+		WakeAllConditionVariable(&q->can_dequeue);
+		WakeAllConditionVariable(&q->can_enqueue);
 		LeaveCriticalSection(&q->me);
 	}
 	return TRUE;
