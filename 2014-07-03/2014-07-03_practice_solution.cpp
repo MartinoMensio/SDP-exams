@@ -21,11 +21,14 @@
 // statistics
 typedef struct _STATS {
 	CRITICAL_SECTION me;
-	INT tot_voters;
-	INT tot_wait_time;
+	INT tot_male_voters;
+	INT tot_female_voters;
+	INT tot_male_wait_time;
+	INT tot_female_wait_time;
 } STATS, *LPSTATS;
 BOOL StatsInit(LPSTATS);
 BOOL StatsDelete(LPSTATS);
+BOOL StatsPrint(LPSTATS);
 
 typedef struct _TIME {
 	INT fake_reference; // the value passed by init
@@ -156,8 +159,8 @@ INT _tmain(INT argc, LPTSTR argv[]) {
 	WaitForMultipleObjects(2, hRegisteringStations, TRUE, INFINITE);
 	WaitForMultipleObjects(N, hVotingStations, TRUE, INFINITE);
 
-	// TODO process results
-
+	// process results
+	StatsPrint(&stats);
 
 	HandToHandDelete(&incomingVoters[MALE]);
 	HandToHandDelete(&incomingVoters[FEMALE]);
@@ -171,12 +174,19 @@ DWORD WINAPI Welcoming(LPVOID p) {
 	FILE *file;
 	VOTER v;
 	int nRead;
+	INT t;
 
 	file = (FILE *)p;
 	nRead = 0;
 	while (VoterRead(file, &v)) {
 		if (nRead++ == 0) {
 			TimeInit(&timer, v.arrival_time_minutes); // set time reference on first record
+		} else {
+			TimeGet(&timer, &t);
+			if (v.arrival_time_minutes > t) {
+				// no time warp, this voter is not yet arrived
+				TimeWait(&timer, v.arrival_time_minutes - t, &t);
+			}
 		}
 		HandToHandDeliver(&incomingVoters[v.sex], v);
 	}
@@ -230,9 +240,25 @@ BOOL VoteVoter(LPVOTER v, INT voting_station_id) {
 
 BOOL StatsInit(LPSTATS s) {
 	InitializeCriticalSection(&s->me);
-	s->tot_voters = 0;
-	s->tot_wait_time = 0;
+	s->tot_male_voters = 0;
+	s->tot_female_voters = 0;
+	s->tot_male_wait_time = 0;
+	s->tot_female_wait_time = 0;
 	return TRUE;
+}
+
+BOOL StatsPrint(LPSTATS s) {
+	INT m, f;
+	EnterCriticalSection(&s->me);
+	__try {
+		m = ((double)s->tot_male_wait_time) / s->tot_male_voters * 60;
+		f = ((double)s->tot_female_wait_time) / s->tot_female_voters * 60;
+		_tprintf(_T("Average wait time:\n- males: %d minutes %d seconds\n- females: %d minutes %d seconds\n"), m / 60, m % 60, f / 60, f % 60);
+	}
+	__finally {
+		LeaveCriticalSection(&s->me);
+	}
+	
 }
 
 BOOL StatsDelete(LPSTATS s) {
@@ -298,10 +324,17 @@ BOOL VoterRead(FILE *file, LPVOTER v) {
 
 // write a voter to output file. Concurrency between voting stations is protected by the stats structure, serializing also file writes
 BOOL VoterWrite(FILE *file, VOTER v) {
+	INT wasted_time;
 	EnterCriticalSection(&stats.me);
 	__try {
-		stats.tot_voters++;
-		stats.tot_wait_time += v.completion_time - v.arrival_time_minutes - v.minutes_to_register - v.minutes_to_vote; // time wasted
+		wasted_time = v.completion_time - v.arrival_time_minutes - v.minutes_to_register - v.minutes_to_vote; // time wasted
+		if (v.sex == MALE) {
+			stats.tot_male_voters++;
+			stats.tot_male_wait_time += wasted_time;
+		} else {
+			stats.tot_female_voters++;
+			stats.tot_female_wait_time += wasted_time;
+		}
 		if (_ftprintf(file, _T("%s Voting_Station_%d %02d:%02d\n"), v.id, v.voting_station, v.completion_time / 60, v.completion_time % 60) == 0) {
 			_ftprintf(stderr, _T("Error writing output file\n"));
 			return FALSE;
@@ -384,7 +417,7 @@ BOOL QueueDequeue(LPQUEUE q, LPVOTER v) {
 		while (q->count == 0 && !q->closed) {
 			SleepConditionVariableCS(&q->can_dequeue, &q->me, INFINITE);
 		}
-		if (q->closed) {
+		if (q->count == 0) {
 			return FALSE;
 		}
 		q->count--;
