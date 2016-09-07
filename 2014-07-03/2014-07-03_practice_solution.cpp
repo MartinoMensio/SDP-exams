@@ -202,9 +202,9 @@ DWORD WINAPI VotingStation(LPVOID p) {
 BOOL RegisterVoter(LPVOTER v) {
 	INT t;
 	TimeGet(&timer, &t);
-	_tprintf(_T("%02d:%02d - %s Registering voter %s requiring %d minutes\n"), t / 60, t % 60, (v->sex == MALE)? "male" : "female", v->id, v->minutes_to_register);
+	_tprintf(_T("%02d:%02d - %s Registering voter %s requiring %d minutes\n"), t / 60, t % 60, (v->sex == MALE)? _T("male") : _T("female"), v->id, v->minutes_to_register);
 	TimeWait(&timer, v->minutes_to_register, &t);
-	_tprintf(_T("%02d:%02d - %s Registered voter %s\n"), t / 60, t % 60, (v->sex == MALE) ? "male" : "female", v->id);
+	_tprintf(_T("%02d:%02d - %s Registered voter %s\n"), t / 60, t % 60, (v->sex == MALE) ? _T("male") : _T("female"), v->id);
 	return TRUE;
 }
 
@@ -228,6 +228,7 @@ BOOL StatsInit(LPSTATS s) {
 
 BOOL StatsDelete(LPSTATS s) {
 	DeleteCriticalSection(&s->me);
+	return TRUE;
 }
 
 // initiates the structure with useful information to create fake times
@@ -395,7 +396,7 @@ BOOL QueueEnqueue(LPQUEUE q, VOTER v) {
 BOOL QueueClose(LPQUEUE q) {
 	EnterCriticalSection(&q->me);
 	__try {
-		q->closed == TRUE;
+		q->closed = TRUE;
 	}
 	__finally {
 		WakeConditionVariable(&q->can_dequeue);
