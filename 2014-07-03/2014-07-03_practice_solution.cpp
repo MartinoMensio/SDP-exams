@@ -10,6 +10,7 @@
 #include <Windows.h>
 #include <tchar.h>
 #include <assert.h>
+#include <time.h>
 
 #define ID_LEN 16
 #define NAME_LEN 20
@@ -17,17 +18,27 @@
 #define MALE 0
 #define FEMALE 1
 
+typedef struct _TIME {
+	// TODO
+	//CRITICAL_SECTION me;
+	INT fake_reference; // the value passed by init
+	time_t real_reference; // the value of time when init called
+} TIME, *LPTIME;
+BOOL TimeInit(LPTIME, INT val);
+BOOL TimeGet(LPTIME, LPINT val);
+BOOL TimeWait(LPTIME, INT val, LPINT newVal);
+
+
 typedef struct _VOTER {
 	TCHAR id[ID_LEN + 1];
 	TCHAR name[NAME_LEN + 1];
 	TCHAR surname[SURNAME_LEN + 1];
 	INT sex;
-	INT arrival_time_hours;
 	INT arrival_time_minutes;
 	INT minutes_to_register;
 	INT minutes_to_vote;
 
-	INT completion_time;
+	INT completion_time; // time (absolute) after having voted
 	INT voting_station;
 } VOTER, *LPVOTER;
 
@@ -35,19 +46,17 @@ BOOL VoterRead(HANDLE, LPVOTER);
 BOOL VoterWrite(HANDLE, VOTER);
 
 
-typedef struct _SWITCH {
-	CRITICAL_SECTION me; // to protect structure
-	LPVOTER male, female; // slots
-	CONDITION_VARIABLE male_ready, female_ready; // signalled when the relative slot is occupied
-	CONDITION_VARIABLE free_ready; // signalled when a slot is free
-} SWITCH, *LPSWITCH;
+typedef struct _HANDTOHAND {
+	//CRITICAL_SECTION me; // to protect structure
+	HANDLE hVoterRequest; // the handshake request (manual reset event)
+	HANDLE hVoterDelivered; // the handshake has been performed (manual reset event)
+	VOTER voter; // data passed hand to hand
+} HANDTOHAND, *LPHANDTOHAND;
 
-BOOL SwitchInit(LPSWITCH);
-BOOL SwitchReadM(LPSWITCH, LPVOTER);
-BOOL SwitchReadF(LPSWITCH, LPVOTER);
-BOOL SwitchFillM(LPSWITCH, VOTER);
-BOOL SwitchFillF(LPSWITCH, VOTER);
-BOOL SwitchDelete(LPSWITCH);
+BOOL HandToHandInit(LPHANDTOHAND);
+BOOL HandToHandRequest(LPHANDTOHAND, LPVOTER);
+BOOL HandToHandDeliver(LPHANDTOHAND, VOTER);
+BOOL HandToHandDelete(LPHANDTOHAND);
 
 
 typedef struct _QUEUE {
@@ -55,7 +64,7 @@ typedef struct _QUEUE {
 	INT size;
 	INT deq_index;
 	INT enq_index;
-	LPVOTER voters; // array of pointers
+	LPVOTER voters; // array of voters
 	CONDITION_VARIABLE can_dequeue, can_enqueue;
 } QUEUE, *LPQUEUE;
 
@@ -65,14 +74,17 @@ BOOL QueueEnqueue(LPQUEUE, VOTER);
 BOOL QueueDelete(LPQUEUE);
 
 // global variables
-SWITCH incomingVoters;
+HANDTOHAND incomingVoters[2];
 QUEUE internalQueue;
 HANDLE hOutputFile;
+TIME timer;
 
 // prototypes
 DWORD WINAPI Welcoming(LPVOID);
 DWORD WINAPI RegisteringStation(LPVOID);
 DWORD WINAPI VotingStation(LPVOID);
+BOOL RegisterVoter(LPVOTER);
+BOOL VoteVoter(LPVOTER, INT votingStationId);
 
 INT _tmain(INT argc, LPTSTR argv[]) {
 	INT N, M;
@@ -111,7 +123,8 @@ INT _tmain(INT argc, LPTSTR argv[]) {
 	assert(hVotingStations);
 
 	// initialize data
-	assert(SwitchInit(&incomingVoters));
+	assert(HandToHandInit(&incomingVoters[MALE]));
+	assert(HandToHandInit(&incomingVoters[FEMALE]));
 	assert(QueueInit(&internalQueue, M));
 
 	// start threads
@@ -129,6 +142,10 @@ INT _tmain(INT argc, LPTSTR argv[]) {
 
 	// TODO process results
 
+
+	HandToHandDelete(&incomingVoters[MALE]);
+	HandToHandDelete(&incomingVoters[FEMALE]);
+	QueueDelete(&internalQueue);
 	return 0;
 }
 
@@ -138,32 +155,16 @@ DWORD WINAPI Welcoming(LPVOID p) {
 
 	hFile = (HANDLE)p;
 	while (VoterRead(hFile, &v)) {
-		if (v.sex == MALE) {
-			SwitchFillM(&incomingVoters, v);
-		} else if (v.sex == FEMALE) {
-			SwitchFillF(&incomingVoters, v);
-		}
+		HandToHandDeliver(&incomingVoters[v.sex], v);
 	}
 	return NULL;
 }
 DWORD WINAPI RegisteringStation(LPVOID p) {
 	VOTER v;
 	INT sex = (INT)p;
-	switch (sex) {
-	case MALE:
-		while (SwitchReadM(&incomingVoters, &v)) {
-			RegisterVoter(&v);
-			QueueEnqueue(&internalQueue, v);
-		}
-		break;
-	case FEMALE:
-		while (SwitchReadM(&incomingVoters, &v)) {
-			RegisterVoter(&v);
-			QueueEnqueue(&internalQueue, v);
-		}
-		break;
-	default:
-		break;
+	while (HandToHandRequest(&incomingVoters[sex], &v)) {
+		RegisterVoter(&v);
+		QueueEnqueue(&internalQueue, v);
 	}
 	return NULL;
 }
@@ -176,4 +177,49 @@ DWORD WINAPI VotingStation(LPVOID p) {
 		VoterWrite(hOutputFile, v);
 	}
 	return NULL;
+}
+
+BOOL RegisterVoter(LPVOTER v) {
+	INT t;
+	TimeGet(&timer, &t);
+	_tprintf(_T("%02d:%02d - %s Registering voter %s requiring %d minutes\n"), t / 60, t % 60, (v->sex == MALE)? "male" : "female", v->id, v->minutes_to_register);
+	TimeWait(&timer, v->minutes_to_register, &t);
+	_tprintf(_T("%02d:%02d - %s Registered voter %s\n"), t / 60, t % 60, (v->sex == MALE) ? "male" : "female", v->id);
+	return TRUE;
+}
+
+BOOL VoteVoter(LPVOTER v, INT voting_station_id) {
+	INT t;
+	TimeGet(&timer, &t);
+	_tprintf(_T("%02d:%02d - Voter %s voting at voting station %d requiring %d minutes\n"), t / 60, t % 60, v->id, voting_station_id, v->minutes_to_vote);
+	TimeWait(&timer, v->minutes_to_vote, &t);
+	_tprintf(_T("%02d:%02d - Voter %s voted at voting station %d\n"), t / 60, t % 60, v->id, voting_station_id);
+	return TRUE;
+}
+
+// initiates the structure with useful information to create fake times
+BOOL TimeInit(LPTIME t, INT val) {
+	t->real_reference = time(NULL);
+	t->fake_reference = val;
+	return TRUE;
+}
+
+// stores new fake time into val
+BOOL TimeGet(LPTIME t, LPINT val) {
+	time_t real_time, real_diff;
+	real_time = time(NULL);
+	real_diff = real_time - t->real_reference; // seconds elapsed from beginning
+	*val = t->fake_reference + real_diff;
+	
+	return TRUE;
+}
+
+BOOL TimeWait(LPTIME t, INT val, LPINT new_val) {
+	time_t real_time, real_diff;
+	
+	Sleep(val * 1000);
+	real_time = time(NULL);
+	real_diff = real_time - t->real_reference; // seconds elapsed from beginning
+	*new_val = t->fake_reference + real_diff;
+	return TRUE;
 }
