@@ -20,7 +20,7 @@
 
 // statistics
 typedef struct _STATS {
-	CRITICAL_SECTION me;
+	CRITICAL_SECTION me; // serializes access to the structure
 	INT tot_male_voters;
 	INT tot_female_voters;
 	INT tot_male_wait_time;
@@ -30,6 +30,7 @@ BOOL StatsInit(LPSTATS);
 BOOL StatsDelete(LPSTATS);
 BOOL StatsPrint(LPSTATS);
 
+// fake time management. Minutes are treated as seconds and time is set with the init function
 typedef struct _TIME {
 	INT fake_reference; // the value passed by init
 	time_t real_reference; // the value of time when init called
@@ -55,7 +56,18 @@ typedef struct _VOTER {
 BOOL VoterRead(FILE *, LPVOTER);
 BOOL VoterWrite(FILE *, VOTER);
 
-
+/* 
+This structure is used to pass some data (a voter) between threads.
+Transaction is defined as follows:
+- a thread makes a request to get the data and waits on the hVoterDelivered event
+- another thread waits for a request on the hVoterRequest event. When this event is signalled,
+  it stores the data in the structure and signals the hVoterDelivered event to wake up the requester
+On both sides it can be a blocking function:
+- the requester waits for a response
+- the sender waits for a request
+It is a simple producer-consumer scheme with ONLY ONE PRODUCER and ONLY ONE CONSUMER
+The closed flag is set by the relative function, that wakes up the receiver that understands the situation
+*/
 typedef struct _HANDTOHAND {
 	//CRITICAL_SECTION me; // to protect structure
 	HANDLE hVoterRequest; // the handshake request (manual reset event)
@@ -70,16 +82,19 @@ BOOL HandToHandDeliver(LPHANDTOHAND, VOTER);
 BOOL HandToHandClose(LPHANDTOHAND);
 BOOL HandToHandDelete(LPHANDTOHAND);
 
-
+/*
+Queue with a limit on size. Can be used with many producers and many consumers.
+Implemented with circular buffer
+*/
 typedef struct _QUEUE {
-	CRITICAL_SECTION me;
-	INT size;
-	INT count;
-	INT deq_index;
-	INT enq_index;
+	CRITICAL_SECTION me; // serializes access to the structure
+	INT size; // size of the queue
+	INT count; // how many elements it contains now
+	INT deq_index; // where to pick an element
+	INT enq_index; // where to store next element
 	LPVOTER voters; // array of voters
 	CONDITION_VARIABLE can_dequeue, can_enqueue;
-	BOOL closed; // if no writers on the queue (to detect termination)
+	BOOL closed; // once closed, no one can add a voter to the queue (to detect termination together with count)
 } QUEUE, *LPQUEUE;
 
 BOOL QueueInit(LPQUEUE, INT);
@@ -89,12 +104,12 @@ BOOL QueueClose(LPQUEUE);
 BOOL QueueDelete(LPQUEUE);
 
 // global variables
-HANDTOHAND incomingVoters[2];
-QUEUE internalQueue;
-FILE *outputFile;
-TIME timer;
-STATS stats;
-SYNCHRONIZATION_BARRIER registration_barrier;
+HANDTOHAND incomingVoters[2]; // one for the reader thread to pass a voter to the male registration thread, another for the female
+QUEUE internalQueue; // queue between registration stations and voting stations
+FILE *outputFile; // voting stations write on it and syncronization is achieved by using the stats structure
+TIME timer; // time management
+STATS stats; // statistics
+SYNCHRONIZATION_BARRIER registration_barrier; // used by registrations stations to choose which one closes the internal queue
 
 // prototypes
 DWORD WINAPI Welcoming(LPVOID);
@@ -170,6 +185,14 @@ INT _tmain(INT argc, LPTSTR argv[]) {
 	return 0;
 }
 
+/*
+Without a specific dedicated thread for reading the input records, the incoming queue could not be emulated.
+Each registration station, looking for the appropriate voters in the file, could pick voters in non-FIFO order.
+This thread is essential also for time management, because the file records are already there but for a correct
+simulation of the system, it is necessary to wait that voters start being processed not before the time written
+in the file. The time in the file is a relative time. When the welcoming thread reads the first record, it sets
+the time to the value of the first record in order to start the simulation immediately.
+*/
 DWORD WINAPI Welcoming(LPVOID p) {
 	FILE *file;
 	VOTER v;
@@ -178,16 +201,23 @@ DWORD WINAPI Welcoming(LPVOID p) {
 
 	file = (FILE *)p;
 	nRead = 0;
+	// read voters from the file
 	while (VoterRead(file, &v)) {
 		if (nRead++ == 0) {
-			TimeInit(&timer, v.arrival_time_minutes); // set time reference on first record
+			// this is the first record, set the time reference
+			TimeInit(&timer, v.arrival_time_minutes);
 		} else {
+			// which time is it?
 			TimeGet(&timer, &t);
+			// check the arrival time of the voter
 			if (v.arrival_time_minutes > t) {
 				// no time warp, this voter is not yet arrived
 				TimeWait(&timer, v.arrival_time_minutes - t, &t);
 			}
 		}
+		// give this voter to the right registration station (possibly waiting because might be busy)
+		// waiting on a registration station preserves FIFO behavior: the voters behind cannot overtake
+		// also if belonging to the other sex
 		HandToHandDeliver(&incomingVoters[v.sex], v);
 	}
 	HandToHandClose(&incomingVoters[MALE]);
@@ -197,12 +227,14 @@ DWORD WINAPI Welcoming(LPVOID p) {
 DWORD WINAPI RegisteringStation(LPVOID p) {
 	VOTER v;
 	INT sex = (INT)p;
+	// who's next?
 	while (HandToHandRequest(&incomingVoters[sex], &v)) {
 		RegisterVoter(&v);
+		// after registration, the voter is put on the internal queue
 		QueueEnqueue(&internalQueue, v);
 	}
 	if (EnterSynchronizationBarrier(&registration_barrier, 0)) {
-		// the last registering station
+		// the last registering station closes the internal queue
 		QueueClose(&internalQueue);
 	}
 	return NULL;
@@ -418,6 +450,7 @@ BOOL QueueDequeue(LPQUEUE q, LPVOTER v) {
 			SleepConditionVariableCS(&q->can_dequeue, &q->me, INFINITE);
 		}
 		if (q->count == 0) {
+			// closed empty queue
 			return FALSE;
 		}
 		q->count--;
@@ -437,6 +470,7 @@ BOOL QueueEnqueue(LPQUEUE q, VOTER v) {
 			SleepConditionVariableCS(&q->can_enqueue, &q->me, INFINITE);
 		}
 		if (q->closed) {
+			// cannot write to closed queue
 			return FALSE;
 		}
 		q->count++;
@@ -455,6 +489,7 @@ BOOL QueueClose(LPQUEUE q) {
 		q->closed = TRUE;
 	}
 	__finally {
+		// wake everyone
 		WakeAllConditionVariable(&q->can_dequeue);
 		WakeAllConditionVariable(&q->can_enqueue);
 		LeaveCriticalSection(&q->me);
