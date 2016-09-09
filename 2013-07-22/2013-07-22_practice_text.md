@@ -2,7 +2,7 @@
 
 A circle underground line has a number of stations connected by a single track. Every station has two tracks, track 0 devoted to the trains traveling clockwise, and track 1 devoted to the trains traveling counterclockwise, as shown in the figure.
 
-TODO ![alt](http://link)
+![2013-07-22_practice_drawing.svg](https://cdn.rawgit.com/MartinoMensio/SDP-exams/master/2013-07-22/2013-07-22_practice_drawing.svg "Underground scheme")
 
 Implement a concurrent C program that takes two command line arguments, the number of stations in the circle line, and the number of trains (less than the number of stations).
 
