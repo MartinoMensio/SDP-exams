@@ -48,10 +48,12 @@ typedef struct _HANDTOHAND {
 	HANDLE hRequest;
 	HANDLE hResponse;
 	TCHAR fileName[MAX_PATH];
+	BOOL closed;
 } HANDTOHAND, *LPHANDTOHAND;
 BOOL HandToHandInit(LPHANDTOHAND);
 BOOL HandToHandAsk(LPHANDTOHAND, LPTSTR fileName);
 BOOL HandToHandDeliver(LPHANDTOHAND, LPCTSTR fileName);
+BOOL HandToHandClose(LPHANDTOHAND hth);
 
 // global variables
 LPTSTR sourceDirectory, destinationDirectory;
@@ -61,6 +63,11 @@ HANDTOHAND intermediateFileName;
 // prototypes
 DWORD WINAPI SortingThread_f(LPVOID);
 DWORD WINAPI MergingThread_f(LPVOID);
+
+#define TYPE_FILE 1
+#define TYPE_DIR 2
+#define TYPE_DOT 3
+static DWORD FileType(LPWIN32_FIND_DATA pFileData);
 
 INT _tmain(INT argc, LPTSTR argv[]) {
 	int n;
@@ -92,7 +99,10 @@ INT _tmain(INT argc, LPTSTR argv[]) {
 	}
 	assert(hThreads[n] = CreateThread(NULL, 0, MergingThread_f, fileName, 0, NULL));
 	
-	assert(WaitForMultipleObjects(n + 1, hThreads, TRUE, INFINITE) == WAIT_OBJECT_0);
+	assert(WaitForMultipleObjects(n, hThreads, TRUE, INFINITE) == WAIT_OBJECT_0);
+
+	HandToHandClose(&intermediateFileName);
+	assert(WaitForSingleObject(hThreads[n], INFINITE) == WAIT_OBJECT_0);
 
 	return 0;
 }
@@ -107,11 +117,11 @@ DWORD WINAPI SortingThread_f(LPVOID p) {
 	TCHAR key[MAX_WORD_LEN + 1], value[MAX_WORD_LEN + 1];
 	DWORD nRead1, nRead2;
 
+	DictionaryInit(&dictionary);
+
 	while (InputNamesRead(&inputNames, inputName)) {
-		_tcsncpy(inputPath, sourceDirectory, MAX_PATH);
-		_tcsncat(inputPath, inputName, MAX_PATH);
-		_tcsncpy(outputPath, destinationDirectory, MAX_PATH);
-		_tcsncat(inputPath, inputName, MAX_PATH);
+		_stprintf(inputPath, _T("%s\\%s"), sourceDirectory, inputName);
+		_stprintf(outputPath, _T("%s\\%s"), destinationDirectory, inputName);
 
 		hInputFile = CreateFile(inputPath, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 		assert(hInputFile != INVALID_HANDLE_VALUE);
@@ -128,8 +138,8 @@ DWORD WINAPI SortingThread_f(LPVOID p) {
 				// end of file
 				break;
 			}
-			if (nRead1 + nRead2 != 30 * sizeof(TCHAR)) {
-				_ftprintf(stderr, _T("Read size mismatch\n"));
+			if (nRead1 + nRead2 != MAX_WORD_LEN * 2 * sizeof(TCHAR)) {
+				_ftprintf(stderr, _T("Read size mismatch 1\n"));
 				break;
 			}
 			DictionaryInsert(&dictionary, key, value);
@@ -169,18 +179,18 @@ DWORD WINAPI MergingThread_f(LPVOID p) {
 				break;
 			}
 			if (nRead != MAX_WORD_LEN * sizeof(TCHAR)) {
-				_ftprintf(stderr, _T("Read size mismatch\n"));
+				_ftprintf(stderr, _T("Read size mismatch 2\n"));
 				break;
 			}
 			assert(ReadFile(hInputFile, &n, sizeof(DWORD), &nRead, NULL));
 			if (nRead != sizeof(DWORD)) {
-				_ftprintf(stderr, _T("Read size mismatch\n"));
+				_ftprintf(stderr, _T("Read size mismatch 3\n"));
 				break;
 			}
 			for (i = 0; i < n; i++) {
 				assert(ReadFile(hInputFile, value, MAX_WORD_LEN * sizeof(TCHAR), &nRead, NULL));
 				if (nRead != MAX_WORD_LEN * sizeof(TCHAR)) {
-					_ftprintf(stderr, _T("Read size mismatch\n"));
+					_ftprintf(stderr, _T("Read size mismatch 4\n"));
 					break;
 				}
 				DictionaryInsert(&dictionary, key, value);
@@ -220,6 +230,11 @@ BOOL InputNamesRead(LPINPUTNAMES in, LPTSTR inputName) {
 				return FALSE;
 			}
 		} else {
+			if (!FindNextFile(in->hFindFile, &wfd)) {
+				return FALSE;
+			}
+		}
+		while (FileType(&wfd) != TYPE_FILE) {
 			if (!FindNextFile(in->hFindFile, &wfd)) {
 				return FALSE;
 			}
@@ -316,9 +331,11 @@ BOOL DictionaryBinaryWrite(LPDICTIONARY d, HANDLE hFile) {
 			if (!WriteFile(hFile, tr->value, MAX_WORD_LEN * sizeof(TCHAR), &nWritten, NULL) || nWritten != MAX_WORD_LEN * sizeof(TCHAR)) {
 				return FALSE;
 			}
+			tr = tr->next;
 			i++;
 		}
 		assert(i == tn->term.nTranslations);
+		tn = tn->next;
 	}
 	return TRUE;
 }
@@ -326,21 +343,48 @@ BOOL DictionaryBinaryWrite(LPDICTIONARY d, HANDLE hFile) {
 BOOL HandToHandInit(LPHANDTOHAND hth) {
 	hth->hRequest = CreateEvent(NULL, FALSE, FALSE, NULL);
 	hth->hResponse = CreateEvent(NULL, FALSE, FALSE, NULL);
+	hth->closed = FALSE;
 	return TRUE;
 }
 BOOL HandToHandAsk(LPHANDTOHAND hth, LPTSTR fileName) {
+	if (hth->closed) {
+		return FALSE;
+	}
 	SetEvent(hth->hRequest);
 	if (WaitForSingleObject(hth->hResponse, INFINITE) != WAIT_OBJECT_0) {
+		return FALSE;
+	}
+	if (hth->closed) {
 		return FALSE;
 	}
 	_tcsncpy(fileName, hth->fileName, MAX_PATH);
 	return TRUE;
 }
 BOOL HandToHandDeliver(LPHANDTOHAND hth, LPCTSTR fileName) {
+	if (hth->closed) {
+		return FALSE;
+	}
 	if (WaitForSingleObject(hth->hRequest, INFINITE) != WAIT_OBJECT_0) {
 		return FALSE;
 	}
 	_tcsncpy(hth->fileName, fileName, MAX_PATH);
 	SetEvent(hth->hResponse);
 	return TRUE;
+}
+BOOL HandToHandClose(LPHANDTOHAND hth) {
+	hth->closed = TRUE;
+	SetEvent(hth->hResponse);
+	return TRUE;
+}
+
+static DWORD FileType(LPWIN32_FIND_DATA pFileData) {
+	BOOL IsDir;
+	DWORD FType;
+	FType = TYPE_FILE;
+	IsDir = (pFileData->dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+	if (IsDir)
+		if (lstrcmp(pFileData->cFileName, _T(".")) == 0 || lstrcmp(pFileData->cFileName, _T("..")) == 0)
+			FType = TYPE_DOT;
+		else FType = TYPE_DIR;
+		return FType;
 }
