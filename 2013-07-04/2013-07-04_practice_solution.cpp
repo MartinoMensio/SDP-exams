@@ -15,7 +15,7 @@
 
 typedef struct _INPUTNAMES {
 	CRITICAL_SECTION me; // mutual exclusion
-	LPTSTR path; // path to search
+	TCHAR path[MAX_PATH]; // path to search
 	HANDLE hFindFile; // NULL if not yet called FindFirstFile
 	BOOL finished; // if true, finished the search
 } INPUTNAMES, *LPINPUTNAMES;
@@ -47,7 +47,7 @@ BOOL DictionaryBinaryWrite(LPDICTIONARY, HANDLE hFile);
 typedef struct _HANDTOHAND {
 	HANDLE hRequest;
 	HANDLE hResponse;
-	LPTSTR fileName[MAX_PATH];
+	TCHAR fileName[MAX_PATH];
 } HANDTOHAND, *LPHANDTOHAND;
 BOOL HandToHandInit(LPHANDTOHAND);
 BOOL HandToHandAsk(LPHANDTOHAND, LPTSTR fileName);
@@ -194,4 +194,153 @@ DWORD WINAPI MergingThread_f(LPVOID p) {
 	assert(hInputFile != INVALID_HANDLE_VALUE);
 	DictionaryBinaryWrite(&dictionary, hOutputFile);
 	CloseHandle(hOutputFile);
+	
+	return NULL;
+}
+
+BOOL InputNamesInit(LPINPUTNAMES in, LPCTSTR path) {
+	InitializeCriticalSection(&in->me);
+	in->finished = FALSE;
+	in->hFindFile = NULL;
+	_tcsncpy(in->path, path, MAX_PATH);
+	return TRUE;
+}
+BOOL InputNamesRead(LPINPUTNAMES in, LPTSTR inputName) {
+	WIN32_FIND_DATA wfd;
+	TCHAR searchExp[MAX_PATH];
+
+	EnterCriticalSection(&in->me);
+	__try {
+		if (in->hFindFile == NULL) {
+			// first call
+			_tcsncpy(searchExp, in->path, MAX_PATH);
+			_tcsncat(searchExp, _T("\\*"), MAX_PATH);
+			in->hFindFile = FindFirstFile(searchExp, &wfd);
+			if (in->hFindFile == INVALID_HANDLE_VALUE) {
+				return FALSE;
+			}
+		} else {
+			if (!FindNextFile(in->hFindFile, &wfd)) {
+				return FALSE;
+			}
+		}
+	}
+	__finally {
+		LeaveCriticalSection(&in->me);
+	}
+	_tcsncpy(inputName, wfd.cFileName, MAX_PATH);
+	return TRUE;
+}
+
+BOOL DictionaryInit(LPDICTIONARY d) {
+	d->nTerms = 0;
+	d->terms = NULL;
+	return TRUE;
+}
+BOOL DictionaryInsert(LPDICTIONARY d, LPCTSTR key, LPCTSTR value) {
+	LPTERM_NODE tn, tn_new;
+	LPTRANSLATION tr_old, tr_new;
+
+	tr_new = (LPTRANSLATION)calloc(1, sizeof(TRANSLATION));
+	assert(tr_new);
+	_tcsncpy(tr_new->value, value, MAX_WORD_LEN);
+	
+	tn = d->terms;
+
+	if (tn == NULL) {
+		// empty dictionary
+		tn = (LPTERM_NODE)calloc(1, sizeof(TERM_NODE));
+		assert(tn);
+		tn->next = NULL;
+		// init term
+		_tcsncpy(tn->term.key, key, MAX_WORD_LEN);
+		tn->term.nTranslations = 0;
+		tn->term.translation_list = NULL;
+		d->terms = tn;
+		d->nTerms++;
+	} else {
+		while (tn->next != NULL && _tcsncmp(tn->next->term.key, key, MAX_WORD_LEN) < 0) {
+			tn = tn->next;
+		}
+		if (tn->next == NULL) {
+			tn_new = (LPTERM_NODE)calloc(1, sizeof(TERM_NODE));
+			tn_new->next = tn->next;
+			tn->next = tn_new;
+			tn = tn_new;
+			// init term
+			_tcsncpy(tn->term.key, key, MAX_WORD_LEN);
+			tn->term.nTranslations = 0;
+			tn->term.translation_list = NULL;
+			d->terms = tn;
+			d->nTerms++;
+		} else {
+			if (_tcsncmp(tn->next->term.key, key, MAX_WORD_LEN) > 0) {
+				tn_new = (LPTERM_NODE)calloc(1, sizeof(TERM_NODE));
+				tn_new->next = tn->next;
+				tn->next = tn_new;
+				tn = tn_new;
+				// init term
+				_tcsncpy(tn->term.key, key, MAX_WORD_LEN);
+				tn->term.nTranslations = 0;
+				tn->term.translation_list = NULL;
+				d->terms = tn;
+				d->nTerms++;
+			} else {
+				// found key
+				tn = tn->next;
+			}
+		}
+	}
+	// insert value
+	tn->term.nTranslations++;
+	tr_old = tn->term.translation_list;
+	tn->term.translation_list = tr_new;
+	tr_new->next = tr_old;
+	return TRUE;
+}
+BOOL DictionaryBinaryWrite(LPDICTIONARY d, HANDLE hFile) {
+	DWORD nWritten, i;
+	LPTERM_NODE tn;
+	LPTRANSLATION tr;
+	tn = d->terms;
+	while (tn != NULL) {
+		if (!WriteFile(hFile, tn->term.key, MAX_WORD_LEN * sizeof(TCHAR), &nWritten, NULL) || nWritten != MAX_WORD_LEN * sizeof(TCHAR)) {
+			return FALSE;
+		}
+		if (!WriteFile(hFile, &tn->term.nTranslations, sizeof(DWORD), &nWritten, NULL) || nWritten != sizeof(DWORD)) {
+			return FALSE;
+		}
+		i = 0;
+		tr = tn->term.translation_list;
+		while (tr != NULL) {
+			if (!WriteFile(hFile, tr->value, MAX_WORD_LEN * sizeof(TCHAR), &nWritten, NULL) || nWritten != MAX_WORD_LEN * sizeof(TCHAR)) {
+				return FALSE;
+			}
+			i++;
+		}
+		assert(i == tn->term.nTranslations);
+	}
+	return TRUE;
+}
+
+BOOL HandToHandInit(LPHANDTOHAND hth) {
+	hth->hRequest = CreateEvent(NULL, FALSE, FALSE, NULL);
+	hth->hResponse = CreateEvent(NULL, FALSE, FALSE, NULL);
+	return TRUE;
+}
+BOOL HandToHandAsk(LPHANDTOHAND hth, LPTSTR fileName) {
+	SetEvent(hth->hRequest);
+	if (WaitForSingleObject(hth->hResponse, INFINITE) != WAIT_OBJECT_0) {
+		return FALSE;
+	}
+	_tcsncpy(fileName, hth->fileName, MAX_PATH);
+	return TRUE;
+}
+BOOL HandToHandDeliver(LPHANDTOHAND hth, LPCTSTR fileName) {
+	if (WaitForSingleObject(hth->hRequest, INFINITE) != WAIT_OBJECT_0) {
+		return FALSE;
+	}
+	_tcsncpy(hth->fileName, fileName, MAX_PATH);
+	SetEvent(hth->hResponse);
+	return TRUE;
 }
