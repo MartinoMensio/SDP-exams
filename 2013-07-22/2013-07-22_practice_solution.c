@@ -98,12 +98,19 @@ void *train_f(void *p) {
             next_track = (myself->station - 1 + n_stations) % n_stations;
             next_station = (myself->station - 1 + n_stations) % n_stations;
         }
+        // first of all, lock the destination station
+        pthread_mutex_lock(&stations[next_station].tracks[myself->direction].me);
+        // also the connection track is locked, but after the destination station:
+        // in this way it is not locked until the destination station is free.
+        // Exchanging the locking order could lead to deadlock
         pthread_mutex_lock(&tracks[next_track].me);
+        // leave the current station
         pthread_mutex_unlock(&stations[myself->station].tracks[myself->direction].me);
         printf("Train n. %3d, traveling toward station %3d\n", myself->id, next_station);
         sleep(10);
-        pthread_mutex_lock(&stations[next_station].tracks[myself->direction].me);
+        // leave the connection track
         pthread_mutex_unlock(&tracks[next_track].me);
+        printf("Train n. %3d, arrived at station %3d\n", myself->id, next_station);
         myself->station = next_station;
     }
 }
